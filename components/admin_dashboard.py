@@ -1037,86 +1037,89 @@ def show_admin_dashboard():
                 "Select a file to preview",
                 options=list(preview_options.keys()),
                 format_func=lambda file_id: (
-                    preview_options[file_id]["file_name"]
+                    preview_options[file_id].get("file_name") or file_id
                 ),
+                key="selected_uploaded_preview",
             )
 
-            if st.button("👁️ Preview File"):
-                st.session_state[
-                    "preview_file_id"
-                ] = selected_preview_id
+            if st.button("👁️ Preview File", key="open_uploaded_preview"):
+                st.session_state["preview_file_id"] = selected_preview_id
 
-            preview_id = st.session_state.get(
-                "preview_file_id"
-            )
+            preview_id = st.session_state.get("preview_file_id")
 
             if preview_id:
-                preview_record = preview_options.get(
-                    preview_id
-                )
+                preview_record = preview_options.get(str(preview_id))
 
                 if preview_record is None:
-                    st.session_state.pop(
-                        "preview_file_id",
-                        None,
-                    )
-                    st.warning(
-                        "Selected file is no longer available."
-                    )
-
+                    st.session_state.pop("preview_file_id", None)
+                    st.warning("Selected file is no longer available.")
                 else:
-                    if st.button("❌ Close Preview"):
-                        st.session_state.pop(
-                            "preview_file_id",
-                            None,
-                        )
+                    if st.button("❌ Close Preview", key="close_uploaded_preview"):
+                        st.session_state.pop("preview_file_id", None)
                         st.rerun()
 
                     try:
-                        with st.spinner(
-                            "Loading file securely..."
-                        ):
+                        with st.spinner("Loading file securely..."):
                             file_bytes = download_lottery_file(
                                 admin_client,
                                 preview_record["storage_path"],
                             )
 
-                        file_type = preview_record.get(
-                            "file_type"
-                        )
-
-                        if file_type in (
-                            "image/jpeg",
-                            "image/png",
-                        ):
-                            st.image(
-                                file_bytes,
-                                caption=preview_record[
-                                    "file_name"
-                                ],
-                                width="stretch",
-                            )
-
-                        elif file_type == "application/pdf":
-                            st.download_button(
-                                "📄 Download PDF to View",
-                                data=file_bytes,
-                                file_name=preview_record[
-                                    "file_name"
-                                ],
-                                mime="application/pdf",
-                                key="preview_pdf_download",
-                            )
-
+                        if not file_bytes:
+                            st.error("The uploaded file is empty.")
                         else:
-                            st.warning(
-                                "Unsupported file format."
+                            file_name = preview_record.get("file_name") or "lottery-result"
+                            mime = str(preview_record.get("file_type") or "").lower()
+                            lower_name = file_name.lower()
+                            is_pdf = (
+                                file_bytes[:5] == b"%PDF-"
+                                or mime == "application/pdf"
+                                or lower_name.endswith(".pdf")
                             )
+                            is_image = (
+                                mime in ("image/jpeg", "image/jpg", "image/png", "image/webp")
+                                or lower_name.endswith((".jpg", ".jpeg", ".png", ".webp"))
+                                or file_bytes.startswith((b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"RIFF"))
+                            )
+
+                            if is_pdf:
+                                import pymupdf
+
+                                with pymupdf.open(stream=file_bytes, filetype="pdf") as pdf:
+                                    page_count = len(pdf)
+                                    st.caption(f"PDF: {file_name} | {page_count} page(s)")
+                                    page_number = st.number_input(
+                                        "Page to preview",
+                                        min_value=1,
+                                        max_value=page_count,
+                                        value=1,
+                                        step=1,
+                                        key=f"preview_page_{preview_id}",
+                                    )
+                                    page = pdf.load_page(int(page_number) - 1)
+                                    pix = page.get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5), alpha=False)
+                                    st.image(
+                                        pix.tobytes("png"),
+                                        caption=f"{file_name} — Page {page_number} of {page_count}",
+                                        width="stretch",
+                                    )
+                                st.download_button(
+                                    "📄 Download Original PDF",
+                                    data=file_bytes,
+                                    file_name=file_name,
+                                    mime="application/pdf",
+                                    key=f"preview_pdf_download_{preview_id}",
+                                )
+                            elif is_image:
+                                st.image(file_bytes, caption=file_name, width="stretch")
+                            else:
+                                st.warning(
+                                    f"Unsupported file format: {mime or 'unknown'}. "
+                                    "Only PDF, JPEG, PNG, and WebP are supported."
+                                )
 
                     except Exception as error:
-                        st.error(
-                            f"Unable to preview file: {error}"
-                        )
+                        st.error(f"Unable to preview file: {error}")
 
     except Exception as error:
         st.error(f"Unable to load uploaded results: {error}")
